@@ -10,6 +10,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
   delay,
+  jidNormalizedUser,
 } from '@whiskeysockets/baileys';
 
 export const runtime = 'nodejs';
@@ -86,6 +87,7 @@ export async function POST(request: Request) {
       let folder = '';
       let finished = false;
       let codeRequested = false;
+      let sessionMessageSent = false;
       let generation = 0;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -176,7 +178,44 @@ export async function POST(request: Request) {
                   await delay(1800);
                   const creds = JSON.parse(await readFile(path.join(folder, 'creds.json'), 'utf8'));
                   const sessionId = `DILSHAN-MD~${Buffer.from(JSON.stringify(creds)).toString('base64')}`;
-                  await finish({ status: 'connected', sessionId });
+
+                  // Send the Session ID to the account's own WhatsApp chat.
+                  // Normalize the device JID first: sock.user.id may contain a device suffix.
+                  let selfMessageDelivered = false;
+                  if (!sessionMessageSent) {
+                    const ownId = sock.user?.id || (state.creds as any)?.me?.id;
+                    const selfJid = ownId ? jidNormalizedUser(ownId) : '';
+                    if (selfJid) {
+                      const message = [
+                        '✅ *DILSHAN MD — SESSION ID*',
+                        '',
+                        'Your WhatsApp device has been linked successfully.',
+                        '',
+                        'Copy the complete Session ID below and keep it private:',
+                        '',
+                        sessionId,
+                        '',
+                        '🔐 Security: Do not share this Session ID. Anyone who has it may be able to access your bot session.',
+                      ].join('\n');
+                      try {
+                        // Do not close the socket until the send call completes and has time to flush.
+                        const sent = await sock.sendMessage(selfJid, { text: message });
+                        await delay(1800);
+                        selfMessageDelivered = Boolean(sent?.key?.id);
+                        sessionMessageSent = selfMessageDelivered;
+                        if (selfMessageDelivered) {
+                          console.log('[pair] session ID self-message queued:', sent.key.id);
+                        } else {
+                          console.error('[pair] session ID self-message returned no message key');
+                        }
+                      } catch (sendError) {
+                        console.error('[pair] session ID self-message failed:', sendError instanceof Error ? sendError.message : sendError);
+                      }
+                    } else {
+                      console.error('[pair] cannot send session ID: connected WhatsApp JID is unavailable');
+                    }
+                  }
+                  await finish({ status: 'connected', sessionId, sessionMessageSent: selfMessageDelivered });
                 } catch (error) {
                   console.error('[pair] failed to encode session:', error instanceof Error ? error.message : error);
                   fail('WhatsApp linked, but the session could not be created. Please retry.');
