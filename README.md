@@ -1,18 +1,15 @@
-# DILSHAN MD Pair API — Vercel
+# DILSHAN MD Pair API — Vercel (streaming)
 
-This is the separate pairing API project. The website remains on Cloudflare Pages.
+This project implements the endpoint the Cloudflare frontend calls: `POST /api/pair/start`.
 
-## Deploy to Vercel
-1. Extract this ZIP and upload its contents to a new GitHub repository.
-2. In Vercel, import that repository. Root Directory must be `.`.
-3. Use the default Next.js build settings (`npm run build`).
-4. Add Environment Variable `CORS_ORIGIN` with your exact Cloudflare Pages origin, for example `https://your-project.pages.dev` (no trailing slash). For a custom domain, use that exact origin instead. Redeploy after adding it.
-5. After deploy, open `https://YOUR-VERCEL-PROJECT.vercel.app/api/health`; it should return `{ "ok": true, ... }`.
-6. In Cloudflare Pages, set `NEXT_PUBLIC_PAIR_API_URL` to the Vercel origin, e.g. `https://YOUR-VERCEL-PROJECT.vercel.app` (no trailing slash), then trigger a new website deployment.
+## Deploy
+1. Upload/extract this project to its own GitHub repository (do not mix it into the Cloudflare frontend repository).
+2. Import that new repository in Vercel and deploy as a Next.js project.
+3. In Vercel > Settings > Environment Variables, set `CORS_ORIGIN` to `https://dilshan-pairsite.pages.dev` (exactly, no trailing slash). Redeploy after saving.
+4. Test `https://dilshan-md-pair-api.vercel.app/api/health`; it should return `{ "ok": true, "service": "dilshan-md-vercel-pair-api" }`.
+5. The frontend calls `POST https://dilshan-md-pair-api.vercel.app/api/pair/start` and reads the SSE stream. No separate status endpoint is needed for this streaming flow.
 
-The website must call `POST https://YOUR-VERCEL-PROJECT.vercel.app/api/pair/start` with JSON `{ "number": "countrycodeandnumber" }` and read the Server-Sent Events stream.
-
-## Important limits
-- The pair-code endpoint streams a live Baileys connection and has a 300-second function limit configured. Vercel plan/runtime limits and outbound WebSocket behavior can still affect pairing; test `/api/health` first, then test one pair request while keeping the page open.
-- This service only links a WhatsApp device and returns a Session ID. It does not host or start the main WhatsApp bot. The bot runtime must separately accept and use that Session ID.
-- Do not expose session IDs or logs publicly. Keep `CORS_ORIGIN` restricted to your website origin.
+## Important
+- The pair endpoint maintains the Baileys socket while the SSE request is open, up to 270 seconds (the Vercel route is configured for 300 seconds). If a function times out, the user must retry. Longer-lived, stateful bot hosting should run as a separate persistent Node.js service.
+- The endpoint returns a `DILSHAN-MD~...` session string after WhatsApp has linked. It does not host the user's main bot process.
+- Set `CORS_ORIGIN` to the exact deployed Cloudflare Pages origin if the site domain differs.
