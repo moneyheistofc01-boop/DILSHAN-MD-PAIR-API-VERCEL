@@ -1,0 +1,25 @@
+{
+  "name": "dilshan-md-vercel-pair-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel Node.js streaming API for DILSHAN-MD WhatsApp pairing codes",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "next": "16.4.0",
+    "pino": "^8.21.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.1.8",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=20.9.0" }
+}
