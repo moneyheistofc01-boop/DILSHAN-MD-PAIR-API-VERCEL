@@ -11,13 +11,23 @@ This project implements the endpoint the Cloudflare frontend calls: `POST /api/p
 
 ## Important
 - The pair endpoint maintains the Baileys socket while the SSE request is open, up to 270 seconds (the Vercel route is configured for 300 seconds). If a function times out, the user must retry. Longer-lived, stateful bot hosting should run as a separate persistent Node.js service.
-- The endpoint returns a `DILSHAN-MD~...` session string after WhatsApp has linked. It does not host the user's main bot process.
+- The endpoint returns a compact `DILSHAN-MD~Z~...` session string after WhatsApp has linked. It does not host the user's main bot process.
 - Set `CORS_ORIGIN` to the exact deployed Cloudflare Pages origin if the site domain differs.
 
 
-## Session ID delivery
-After WhatsApp reports a successful connection, the API attempts to send a formatted `DILSHAN MD — SESSION ID` message to the linked account's own WhatsApp chat. Keep this ID private; it contains authentication credentials. The API also returns the session ID to the website. Check Vercel Function Logs for `[pair] session ID self-message failed` if the message does not arrive.
+## Three-message self-chat delivery and compact Session ID
+After WhatsApp reports a successful connection, the API sends exactly three separate self-chat messages in sequence:
+1. A successful device-link confirmation (no Session ID).
+2. The compact Session ID by itself (no other text), for easy copying.
+3. Activation instructions with the contact link `https://wa.me/94741933159`.
 
+The compact format is `DILSHAN-MD~Z~<gzip-base64url>`. It is reversible compression, not truncation. Any activation/import tool that expects the old `DILSHAN-MD~<base64-json>` format must decode it first. This repo includes `scripts/decode-session.cjs`, which converts a compact ID to the legacy format locally:
 
-## Self-chat delivery patch
-This build normalizes the connected account JID with `jidNormalizedUser`, waits for the send operation to complete, and reports the actual send result rather than treating a present JID as proof of delivery. The session payload remains the existing `DILSHAN-MD~<base64-json>` format for compatibility with the current bot. Do not shorten or truncate it yet: a compact/compressed format requires a corresponding decoder change in the main bot's session import/auth code.
+```sh
+node scripts/decode-session.cjs "DILSHAN-MD~Z~PASTE_COMPACT_ID_HERE"
+```
+
+Keep the ID private and do not paste real session strings into public logs, GitHub, or chats. The decoder writes a full authentication credential string to stdout; use it only in a trusted environment. The message sequence and compression are code changes and still need a live WhatsApp test after deployment.
+
+## Self-chat delivery
+The sender normalizes the connected account JID with `jidNormalizedUser`, waits for each send operation to complete, and records message IDs in Vercel Function Logs. If the messages do not arrive, inspect logs for `[pair] three-part self-message sequence failed`.

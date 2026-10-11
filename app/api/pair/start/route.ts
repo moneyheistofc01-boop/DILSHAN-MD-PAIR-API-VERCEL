@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -177,7 +178,9 @@ export async function POST(request: Request) {
                 try {
                   await delay(1800);
                   const creds = JSON.parse(await readFile(path.join(folder, 'creds.json'), 'utf8'));
-                  const sessionId = `DILSHAN-MD~${Buffer.from(JSON.stringify(creds)).toString('base64')}`;
+                  const compressed = gzipSync(Buffer.from(JSON.stringify(creds)), { level: 9 }).toString('base64url');
+                  // New compact format: main-bot/activation tooling must inflate this before use.
+                  const sessionId = `DILSHAN-MD~Z~${compressed}`;
 
                   // Send the Session ID to the account's own WhatsApp chat.
                   // Normalize the device JID first: sock.user.id may contain a device suffix.
@@ -186,30 +189,43 @@ export async function POST(request: Request) {
                     const ownId = sock.user?.id || (state.creds as any)?.me?.id;
                     const selfJid = ownId ? jidNormalizedUser(ownId) : '';
                     if (selfJid) {
-                      const message = [
-                        '✅ *DILSHAN MD — SESSION ID*',
+                      // Send exactly three separate messages, in order. Message 2 contains only the compact ID.
+                      const introMessage = [
+                        '✅ *DILSHAN MD — DEVICE LINKED*',
                         '',
                         'Your WhatsApp device has been linked successfully.',
+                        'Your session is ready for activation.',
                         '',
-                        'Copy the complete Session ID below and keep it private:',
+                        'Please keep the next message private. It contains your session credentials.',
+                      ].join('\n');
+                      const activationMessage = [
+                        '🚀 *ACTIVATE YOUR BOT*',
                         '',
-                        sessionId,
+                        'To activate DILSHAN MD and complete setup, contact our activation team:',
+                        'https://wa.me/94741933159',
                         '',
-                        '🔐 Security: Do not share this Session ID. Anyone who has it may be able to access your bot session.',
+                        'Send your Session ID only through the official activation chat. Never post it publicly.',
                       ].join('\n');
                       try {
-                        // Do not close the socket until the send call completes and has time to flush.
-                        const sent = await sock.sendMessage(selfJid, { text: message });
-                        await delay(1800);
-                        selfMessageDelivered = Boolean(sent?.key?.id);
+                        const first = await sock.sendMessage(selfJid, { text: introMessage });
+                        await delay(450);
+                        const second = await sock.sendMessage(selfJid, { text: sessionId });
+                        await delay(450);
+                        const third = await sock.sendMessage(selfJid, { text: activationMessage });
+                        await delay(1200);
+                        selfMessageDelivered = Boolean(first?.key?.id && second?.key?.id && third?.key?.id);
                         sessionMessageSent = selfMessageDelivered;
                         if (selfMessageDelivered) {
-                          console.log('[pair] session ID self-message queued:', sent.key.id);
+                          console.log('[pair] all three self-messages queued:', {
+                            intro: first.key.id,
+                            session: second.key.id,
+                            activation: third.key.id,
+                          });
                         } else {
-                          console.error('[pair] session ID self-message returned no message key');
+                          console.error('[pair] one or more self-messages returned no message key');
                         }
                       } catch (sendError) {
-                        console.error('[pair] session ID self-message failed:', sendError instanceof Error ? sendError.message : sendError);
+                        console.error('[pair] three-part self-message sequence failed:', sendError instanceof Error ? sendError.message : sendError);
                       }
                     } else {
                       console.error('[pair] cannot send session ID: connected WhatsApp JID is unavailable');
