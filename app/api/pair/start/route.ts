@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { saveAuthFiles } from '../../../../lib/session-store';
 import pino from 'pino';
 import makeWASocket, {
   Browsers,
@@ -57,6 +57,9 @@ export function OPTIONS(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (!process.env.MONGODB_URI || (process.env.SESSION_LOOKUP_SECRET || '').length < 32) {
+    return jsonError(request, 'Session storage is not configured. Set MONGODB_URI and a SESSION_LOOKUP_SECRET of at least 32 characters in Vercel, then redeploy.', 503);
+  }
   const origin = request.headers.get('origin');
   const allow = configuredOrigins();
   if (origin && !allow.includes('*') && !allow.includes(origin.replace(/\/$/, ''))) {
@@ -177,10 +180,16 @@ export async function POST(request: Request) {
               if (update.connection === 'open') {
                 try {
                   await delay(1800);
-                  const creds = JSON.parse(await readFile(path.join(folder, 'creds.json'), 'utf8'));
-                  const compressed = gzipSync(Buffer.from(JSON.stringify(creds)), { level: 9 }).toString('base64url');
-                  // New compact format: main-bot/activation tooling must inflate this before use.
-                  const sessionId = `DILSHAN-MD~Z~${compressed}`;
+                  // Store the COMPLETE Baileys multi-file auth state in durable MongoDB storage.
+                  // The visible session ID is only a 10-character opaque reference token.
+                  const authFiles: Record<string, string> = {};
+                  const entries = await readdir(folder, { withFileTypes: true });
+                  for (const entry of entries) {
+                    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+                    if (!/^[A-Za-z0-9._-]+\.json$/.test(entry.name)) continue;
+                    authFiles[entry.name] = await readFile(path.join(folder, entry.name), 'utf8');
+                  }
+                  const sessionId = await saveAuthFiles(authFiles);
 
                   // Send the Session ID to the account's own WhatsApp chat.
                   // Normalize the device JID first: sock.user.id may contain a device suffix.
@@ -233,8 +242,8 @@ export async function POST(request: Request) {
                   }
                   await finish({ status: 'connected', sessionId, sessionMessageSent: selfMessageDelivered });
                 } catch (error) {
-                  console.error('[pair] failed to encode session:', error instanceof Error ? error.message : error);
-                  fail('WhatsApp linked, but the session could not be created. Please retry.');
+                  console.error('[pair] failed to store the full session:', error instanceof Error ? error.message : error);
+                  fail('WhatsApp linked, but the short session ID could not be saved. Check MONGODB_URI and SESSION_LOOKUP_SECRET in Vercel.');
                 }
               }
 

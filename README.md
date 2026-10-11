@@ -1,33 +1,39 @@
-# DILSHAN MD Pair API — Vercel (streaming)
+# DILSHAN MD Pair API — Vercel, 10-character Session IDs
 
-This project implements the endpoint the Cloudflare frontend calls: `POST /api/pair/start`.
+This API creates a 10-character opaque token (for example `ABCD2345EF`) while keeping the full Baileys multi-file auth state in MongoDB. The token is a reference, not compressed credentials. The bot fetches the auth files over HTTPS using a shared secret.
 
-## Deploy
-1. Upload/extract this project to its own GitHub repository (do not mix it into the Cloudflare frontend repository).
-2. Import that new repository in Vercel and deploy as a Next.js project.
-3. In Vercel > Settings > Environment Variables, set `CORS_ORIGIN` to `https://dilshan-pairsite.pages.dev` (exactly, no trailing slash). Redeploy after saving.
-4. Test `https://dilshan-md-pair-api.vercel.app/api/health`; it should return `{ "ok": true, "service": "dilshan-md-vercel-pair-api" }`.
-5. The frontend calls `POST https://dilshan-md-pair-api.vercel.app/api/pair/start` and reads the SSE stream. No separate status endpoint is needed for this streaming flow.
+## Required Vercel Environment Variables
 
-## Important
-- The pair endpoint maintains the Baileys socket while the SSE request is open, up to 270 seconds (the Vercel route is configured for 300 seconds). If a function times out, the user must retry. Longer-lived, stateful bot hosting should run as a separate persistent Node.js service.
-- The endpoint returns a compact `DILSHAN-MD~Z~...` session string after WhatsApp has linked. It does not host the user's main bot process.
-- Set `CORS_ORIGIN` to the exact deployed Cloudflare Pages origin if the site domain differs.
+- `CORS_ORIGIN`: exact Cloudflare Pages origin, such as `https://dilshan-pairsite.pages.dev` (no trailing slash).
+- `MONGODB_URI`: MongoDB Atlas connection string. Keep the DB user/password private; use a dedicated DB user and restrict access as much as the host permits.
+- `MONGODB_DB`: optional database name, defaults to `dilshan_md`.
+- `SESSION_LOOKUP_SECRET`: at least 32 random characters. Use your own unique secret. Set exactly the same value on the bot host. Do not commit it to GitHub or send it in public messages.
 
+After adding variables, redeploy the Vercel API. The Pair route stores all `.json` files from the Baileys auth directory, not just `creds.json`.
 
-## Three-message self-chat delivery and compact Session ID
-After WhatsApp reports a successful connection, the API sends exactly three separate self-chat messages in sequence:
-1. A successful device-link confirmation (no Session ID).
-2. The compact Session ID by itself (no other text), for easy copying.
-3. Activation instructions with the contact link `https://wa.me/94741933159`.
+## MongoDB setup (first time)
 
-The compact format is `DILSHAN-MD~Z~<gzip-base64url>`. It is reversible compression, not truncation. Any activation/import tool that expects the old `DILSHAN-MD~<base64-json>` format must decode it first. This repo includes `scripts/decode-session.cjs`, which converts a compact ID to the legacy format locally:
+1. Create a MongoDB Atlas cluster and a database user with a strong password.
+2. Configure Atlas Network Access to allow the Vercel deployment and bot host to connect. If using a broad allowlist entry for serverless hosting, use strong credentials and understand the exposure.
+3. Copy the SRV connection string into `MONGODB_URI`; replace the username, password, and cluster host.
+4. Add the four variables above in Vercel and redeploy.
 
-```sh
-node scripts/decode-session.cjs "DILSHAN-MD~Z~PASTE_COMPACT_ID_HERE"
-```
+## Endpoints
 
-Keep the ID private and do not paste real session strings into public logs, GitHub, or chats. The decoder writes a full authentication credential string to stdout; use it only in a trusted environment. The message sequence and compression are code changes and still need a live WhatsApp test after deployment.
+- `GET /api/health`: basic API process health.
+- `POST /api/pair/start`: generates a Pair Code using an SSE stream. On successful WhatsApp link, it stores the full auth files, then sends exactly three self-chat messages: link confirmation, the 10-character token alone, and activation contact `https://wa.me/94741933159`.
+- `GET /api/session/{TOKEN}`: returns stored auth files only when `Authorization: Bearer <SESSION_LOOKUP_SECRET>` is present. Never remove this protection.
 
-## Self-chat delivery
-The sender normalizes the connected account JID with `jidNormalizedUser`, waits for each send operation to complete, and records message IDs in Vercel Function Logs. If the messages do not arrive, inspect logs for `[pair] three-part self-message sequence failed`.
+## Bot host environment variables
+
+On the persistent Node.js bot host, set:
+
+- `SESSION_ID`: the 10-character token received in WhatsApp (no prefix, no spaces).
+- `SESSION_API_URL`: `https://dilshan-md-pair-api.vercel.app` (or your actual Vercel deployment URL).
+- `SESSION_LOOKUP_SECRET`: the same value as the Vercel variable.
+
+Deploy/restart the bot service after setting these values. Existing `session/creds.json` takes precedence; when intentionally switching to a new token, remove the old session volume/files first. Keep persistent storage enabled for the bot's `session/` directory.
+
+## Security
+
+A 10-character ID cannot contain the full credentials by itself; it is an opaque database key. Treat it as private anyway. The API's shared secret is also required to retrieve auth files. Revoke exposed WhatsApp linked devices and generate a fresh token after any credential leak.
