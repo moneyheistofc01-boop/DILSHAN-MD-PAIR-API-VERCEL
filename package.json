@@ -2,7 +2,7 @@
   "name": "dilshan-md-pair-api-file-storage",
   "version": "2.0.0",
   "private": true,
-  "description": "DILSHAN-MD WhatsApp pairing API using persistent files, no database",
+  "description": "DILSHAN-MD WhatsApp pairing API using file storage",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
