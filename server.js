@@ -27,6 +27,9 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), '
 const SESSION_DIR = path.join(DATA_DIR, 'sessions');
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const SESSION_PREFIX = 'DILSHAN-MD~';
+const PRICE_PER_MONTH = 250;
+const MAX_MONTHS = 5;
+const ACTIVATION_NUMBER = '94741933159';
 const lookupAttempts = new Map();
 
 // WA_VERSION=2,3000,1027934701  (optional: fixes the WhatsApp Web version if needed)
@@ -35,6 +38,12 @@ function configuredVersion() {
   if (!raw) return undefined;
   const parts = raw.split(',').map((n) => Number(n.trim()));
   return parts.length === 3 && parts.every(Number.isFinite) ? parts : undefined;
+}
+
+function parseMonths(value) {
+  if (value === undefined || value === null || value === '') return 1;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_MONTHS ? n : null;
 }
 
 function origins() {
@@ -130,6 +139,12 @@ app.post('/api/pair/start', async (req, res) => {
   if (number.length < 8 || number.length > 15) {
     return res.status(400).json({ error: 'Enter a valid WhatsApp number with country code (8–15 digits).' });
   }
+  const months = parseMonths(req.body?.months);
+  if (months === null) {
+    return res.status(400).json({ error: `Choose between 1 and ${MAX_MONTHS} months.` });
+  }
+  const totalPrice = PRICE_PER_MONTH * months;
+
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -181,6 +196,16 @@ app.post('/api/pair/start', async (req, res) => {
       }
     }
 
+    const sendText = async (sock, jid, text) => {
+      try {
+        const sent = await sock.sendMessage(jid, { text });
+        return Boolean(sent?.key?.id);
+      } catch (err) {
+        console.error('[pair] sendMessage failed:', err?.message || err);
+        return false;
+      }
+    };
+
     const createSocket = (requestCode) => {
       const current = ++generation;
       console.log('[pair] creating socket, requestCode =', requestCode, 'gen =', current);
@@ -224,26 +249,38 @@ app.post('/api/pair/start', async (req, res) => {
             const sessionDisplay = `${SESSION_PREFIX}${token}`;
             const ownId = sock.user?.id || state.creds?.me?.id;
             const selfJid = ownId ? jidNormalizedUser(ownId) : '';
+            const activationJid = `${ACTIVATION_NUMBER}@s.whatsapp.net`;
             let sessionMessageSent = false;
+
             if (selfJid) {
-              try {
-                const first = await sock.sendMessage(selfJid, { text: [
-                  '✅ *DILSHAN MD — DEVICE LINKED*', '',
-                  'Your WhatsApp device has been linked successfully.',
-                  'Your session is saved and ready for activation.', '',
-                  'Keep the next message private.',
-                ].join('\n') });
-                await delay(400);
-                const second = await sock.sendMessage(selfJid, { text: sessionDisplay });
-                await delay(400);
-                const third = await sock.sendMessage(selfJid, { text: [
-                  '🚀 *ACTIVATE YOUR BOT*', '',
-                  'https://wa.me/94741933159',
-                ].join('\n') });
-                await delay(800);
-                sessionMessageSent = Boolean(first?.key?.id && second?.key?.id && third?.key?.id);
-              } catch (err) { console.error('[pair] self-message failed:', err?.message || err); }
+              const introOk = await sendText(sock, selfJid, [
+                '✅ *DILSHAN MD — DEVICE LINKED*', '',
+                'Your WhatsApp device has been linked successfully.',
+                'Your session is saved and ready for activation.', '',
+                'Keep the next message private.',
+              ].join('\n'));
+              await delay(400);
+              const idOk = await sendText(sock, selfJid, sessionDisplay);
+              await delay(400);
+              const activateOk = await sendText(sock, selfJid, [
+                '🚀 *ACTIVATE YOUR BOT*', '',
+                `https://wa.me/${ACTIVATION_NUMBER}`,
+              ].join('\n'));
+              await delay(400);
+              sessionMessageSent = introOk && idOk && activateOk;
             }
+
+            // Activation team notification: session ID, plan length and price.
+            const activationOk = await sendText(sock, activationJid, [
+              '📩 *NEW DILSHAN MD ACTIVATION*', '',
+              `Session ID: ${sessionDisplay}`,
+              `Number: +${number}`,
+              `Plan: ${months} ${months === 1 ? 'month' : 'months'}`,
+              `Price: LKR ${totalPrice}`,
+            ].join('\n'));
+            console.log('[pair] activation message sent:', activationOk);
+
+            await delay(800);
             await persistAuth(folder, token);
             console.log('[pair] SUCCESS, token saved, sessionMessageSent =', sessionMessageSent);
             await finish({
@@ -251,6 +288,8 @@ app.post('/api/pair/start', async (req, res) => {
               sessionId: token,
               sessionIdDisplay: sessionDisplay,
               sessionIdLength: 10,
+              months,
+              totalPrice,
               sessionMessageSent,
             });
           } catch (err) {
@@ -323,4 +362,4 @@ if (require.main === module) {
       process.exit(1);
     }
   })();
-              }
+                                                                   }
