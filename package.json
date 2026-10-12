@@ -1,16 +1,15 @@
 {
   "name": "dilshan-md-pair-api-file-storage",
-  "version": "2.2.0",
+  "version": "2.1.0",
   "private": true,
-  "description": "DILSHAN-MD WhatsApp pairing API using Baileys and persistent files (no database)",
+  "description": "DILSHAN-MD WhatsApp pairing API using persistent files without a database",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check api/health.js && node --check api/pair/start.js && node --check api/session-unavailable.js",
-    "vercel-build": "npm run check"
+    "check": "node --check server.js"
   },
   "engines": {
-    "node": "22.x"
+    "node": ">=20.9.0"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
