@@ -1,3 +1,24 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/health.js": {
+      "maxDuration": 10
+    },
+    "api/pair/start.js": {
+      "maxDuration": 10
+    },
+    "api/session-unavailable.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/api/session/:path*",
+      "destination": "/api/session-unavailable"
+    }
+  ]
 }

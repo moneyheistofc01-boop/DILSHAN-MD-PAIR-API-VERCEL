@@ -6,6 +6,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const {
   default: makeWASocket,
   Browsers,
@@ -23,7 +24,12 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '16kb' }));
 
 const PORT = Number(process.env.PORT || 10000);
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), '.data'));
+const IS_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
+// Vercel only provides temporary /tmp storage. Persistent sessions require a disk-backed host.
+const DEFAULT_DATA_DIR = IS_VERCEL
+  ? path.join(os.tmpdir(), 'dilshan-md-pair')
+  : path.join(process.cwd(), '.data');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || DEFAULT_DATA_DIR);
 const SESSION_DIR = path.join(DATA_DIR, 'sessions');
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const lookupAttempts = new Map();
@@ -54,7 +60,7 @@ app.use((req, res, next) => {
 
 function validToken(token) { return /^[A-HJ-NP-Z2-9]{10}$/.test(String(token || '')); }
 function sendEvent(res, payload) {
-  if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(payload)}\\n\\n`);
+  if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 function lookupRateLimited(ip) {
   const now = Date.now(), key = String(ip || 'unknown');
@@ -110,14 +116,26 @@ app.get('/api/health', async (_req, res) => {
     await fs.mkdir(SESSION_DIR, { recursive: true });
     await fs.access(SESSION_DIR, fsSync.constants.R_OK | fsSync.constants.W_OK);
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ok: true, service: 'dilshan-md-pair-api-file-storage', storage: 'persistent-files', database: false });
+    res.json({
+      ok: true,
+      service: 'dilshan-md-pair-api-file-storage',
+      storage: IS_VERCEL ? 'ephemeral-filesystem' : 'persistent-files',
+      database: false,
+      pairingSupported: !IS_VERCEL,
+      ...(IS_VERCEL ? { warning: 'Vercel filesystem is temporary. Deploy the pairing API to a Node.js host with a persistent disk.' } : {}),
+    });
   } catch {
     res.status(500).json({ ok: false, error: 'Session storage is not writable. Configure DATA_DIR and persistent disk.' });
   }
 });
 
 app.post('/api/pair/start', async (req, res) => {
-  const number = String(req.body?.number ?? '').replace(/\\D/g, '');
+  if (IS_VERCEL) {
+    return res.status(503).json({
+      error: 'WhatsApp pairing is disabled on Vercel because its filesystem is temporary. Deploy this API to Render with the included persistent disk configuration.',
+    });
+  }
+  const number = String(req.body?.number ?? '').replace(/\D/g, '');
   if (number.length < 8 || number.length > 15) {
     return res.status(400).json({ error: 'Enter a valid WhatsApp number with country code (8–15 digits).' });
   }
@@ -207,7 +225,7 @@ app.post('/api/pair/start', async (req, res) => {
                   'Your WhatsApp device has been linked successfully.',
                   'Your session is saved and ready for activation.', '',
                   'Keep the next message private.',
-                ].join('\\n') });
+                ].join('\n') });
                 await delay(500);
                 const second = await sock.sendMessage(selfJid, { text: token });
                 await delay(500);
@@ -216,7 +234,7 @@ app.post('/api/pair/start', async (req, res) => {
                   'To activate DILSHAN MD, contact the activation team:',
                   'https://wa.me/94741933159', '',
                   'Never share your Session ID publicly.',
-                ].join('\\n') });
+                ].join('\n') });
                 await delay(800);
                 sessionMessageSent = Boolean(first?.key?.id && second?.key?.id && third?.key?.id);
               } catch (err) { console.error('[pair] self-message failed:', err?.message || err); }
@@ -250,6 +268,9 @@ app.post('/api/pair/start', async (req, res) => {
 
 app.get('/api/session/:token', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, private');
+  if (IS_VERCEL) {
+    return res.status(503).json({ error: 'Session lookup requires persistent storage. Deploy the API to a Node.js host with a persistent disk.' });
+  }
   const token = String(req.params.token || '');
   if (!validToken(token)) return res.status(400).json({ error: 'Invalid session token format.' });
   if (lookupRateLimited(req.ip || req.socket?.remoteAddress)) {
