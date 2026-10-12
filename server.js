@@ -28,6 +28,14 @@ const SESSION_DIR = path.join(DATA_DIR, 'sessions');
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const lookupAttempts = new Map();
 
+// WA_VERSION=2,3000,1030000000  (optional: fixes the WhatsApp Web version if latest fails)
+function configuredVersion() {
+  const raw = String(process.env.WA_VERSION || '').trim();
+  if (!raw) return undefined;
+  const parts = raw.split(',').map((n) => Number(n.trim()));
+  return parts.length === 3 && parts.every(Number.isFinite) ? parts : undefined;
+}
+
 function origins() {
   return String(process.env.CORS_ORIGIN || 'https://dilshan-pairsite.pages.dev')
     .split(',').map((v) => v.trim().replace(/\/$/, '')).filter(Boolean);
@@ -144,7 +152,7 @@ app.post('/api/pair/start', async (req, res) => {
     await cleanup();
     if (!res.writableEnded) res.end();
   };
-  const fail = (message) => { void finish({ status: 'failed', error: message }); };
+  const fail = (message) => { console.error('[pair] FAILED:', message); void finish({ status: 'failed', error: message }); };
   res.on('close', () => {
     if (!finished) { finished = true; void cleanup(); }
   });
@@ -153,17 +161,28 @@ app.post('/api/pair/start', async (req, res) => {
     await fs.mkdir(SESSION_DIR, { recursive: true });
     await fs.mkdir(DATA_DIR, { recursive: true });
     sendEvent(res, { status: 'pending', message: 'Starting WhatsApp connection…' });
-    heartbeat = setInterval(() => sendEvent(res, { status: 'pending', message: 'Waiting for WhatsApp…' }), 12000);
+    heartbeat = setInterval(() => sendEvent(res, { status: 'pending', message: 'Waiting for WhatsApp…' }), 10000);
     timeout = setTimeout(() => fail('Pairing timed out. Please try again and link the device promptly.'), 270000);
     folder = await fs.mkdtemp(path.join(DATA_DIR, '.pending-pair-'));
     const { state, saveCreds } = await useMultiFileAuthState(folder);
     const logger = pino({ level: 'silent' });
-    let version;
-    try { version = (await fetchLatestBaileysVersion()).version; }
-    catch (err) { console.warn('[pair] Baileys version lookup failed:', err?.message || err); }
+
+    let version = configuredVersion();
+    if (version) {
+      console.log('[pair] using WA_VERSION from env:', version.join('.'));
+    } else {
+      try {
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+        console.log('[pair] using latest Baileys version:', version.join('.'), 'isLatest:', latest.isLatest);
+      } catch (err) {
+        console.warn('[pair] Baileys version lookup failed:', err?.message || err);
+      }
+    }
 
     const createSocket = (requestCode) => {
       const current = ++generation;
+      console.log('[pair] creating socket, requestCode =', requestCode, 'gen =', current);
       const sock = makeWASocket({
         ...(version ? { version } : {}),
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
@@ -175,24 +194,31 @@ app.post('/api/pair/start', async (req, res) => {
       sock.ev.on('creds.update', saveCreds);
       sock.ev.on('connection.update', async (update) => {
         if (finished || current !== generation) return;
+        const statusCode = update.lastDisconnect?.error?.output?.statusCode;
+        console.log('[pair] update:', JSON.stringify({
+          connection: update.connection, qr: Boolean(update.qr), statusCode, registered: state.creds.registered,
+        }));
+
         if (update.qr && requestCode && !codeRequested && !state.creds.registered) {
           codeRequested = true;
           try {
-            await delay(1000);
+            await delay(500);
             let rawCode = '', lastError;
             for (let i = 0; i < 3; i++) {
               try { rawCode = await sock.requestPairingCode(number); break; }
-              catch (err) { lastError = err; if (i < 2) await delay(1500); }
+              catch (err) { lastError = err; console.error('[pair] requestPairingCode attempt', i + 1, err?.message || err); if (i < 2) await delay(1000); }
             }
             if (!rawCode) throw lastError || new Error('No pairing code returned.');
+            console.log('[pair] pairing code issued');
             sendEvent(res, { status: 'code', code: rawCode.match(/.{1,4}/g)?.join('-') || rawCode });
           } catch (err) {
-            console.error('[pair] pairing code failed:', err?.message || err);
-            fail('Could not generate a pairing code. Check the number and try again.');
+            fail(`Could not generate a pairing code (${err?.message || 'unknown'}). Check the number and try again.`);
           }
         }
+
         if (update.connection === 'open' && !openedHandled) {
           openedHandled = true;
+          console.log('[pair] connection open, saving session');
           try {
             await delay(1500);
             const token = await makeToken();
@@ -207,7 +233,7 @@ app.post('/api/pair/start', async (req, res) => {
                   'Your WhatsApp device has been linked successfully.',
                   'Your session is saved and ready for activation.', '',
                   'Keep the next message private.',
-                ].join('\\n') });
+                ].join('\n') });
                 await delay(500);
                 const second = await sock.sendMessage(selfJid, { text: token });
                 await delay(500);
@@ -216,27 +242,27 @@ app.post('/api/pair/start', async (req, res) => {
                   'To activate DILSHAN MD, contact the activation team:',
                   'https://wa.me/94741933159', '',
                   'Never share your Session ID publicly.',
-                ].join('\\n') });
+                ].join('\n') });
                 await delay(800);
                 sessionMessageSent = Boolean(first?.key?.id && second?.key?.id && third?.key?.id);
               } catch (err) { console.error('[pair] self-message failed:', err?.message || err); }
             }
-            // Persist the latest auth state after the self-messages/key updates.
             await persistAuth(folder, token);
+            console.log('[pair] SUCCESS, token saved, sessionMessageSent =', sessionMessageSent);
             await finish({ status: 'connected', sessionId: token, sessionIdLength: 10, sessionMessageSent });
           } catch (err) {
             console.error('[pair] storing linked session failed:', err?.stack || err?.message || err);
             fail('WhatsApp linked, but session files could not be saved. Check persistent disk settings.');
           }
         }
+
         if (update.connection === 'close') {
-          const statusCode = update.lastDisconnect?.error?.output?.statusCode;
           if (statusCode === DisconnectReason.restartRequired && !openedHandled) {
+            // WhatsApp asks for a reconnect right after the code is accepted. Reuse the same creds.
             await delay(500);
             if (!finished) createSocket(false);
           } else if (!openedHandled) {
-            console.error('[pair] connection closed before open:', statusCode);
-            fail('WhatsApp connection closed before linking finished. Please try again.');
+            fail(`WhatsApp connection closed before linking finished (code ${statusCode ?? 'unknown'}). Please try again.`);
           }
         }
       });
@@ -294,4 +320,4 @@ if (require.main === module) {
       process.exit(1);
     }
   })();
-}
+                          }
