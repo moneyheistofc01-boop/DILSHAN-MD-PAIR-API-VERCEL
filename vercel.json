@@ -1,6 +1,3 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app/api/pair/start/route.ts": { "maxDuration": 300 }
-  }
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }
