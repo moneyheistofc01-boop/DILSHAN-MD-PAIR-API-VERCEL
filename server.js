@@ -26,9 +26,10 @@ const PORT = Number(process.env.PORT || 10000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), '.data'));
 const SESSION_DIR = path.join(DATA_DIR, 'sessions');
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const SESSION_PREFIX = 'DILSHAN-MD~';
 const lookupAttempts = new Map();
 
-// WA_VERSION=2,3000,1030000000  (optional: fixes the WhatsApp Web version if latest fails)
+// WA_VERSION=2,3000,1027934701  (optional: fixes the WhatsApp Web version if needed)
 function configuredVersion() {
   const raw = String(process.env.WA_VERSION || '').trim();
   if (!raw) return undefined;
@@ -195,9 +196,6 @@ app.post('/api/pair/start', async (req, res) => {
       sock.ev.on('connection.update', async (update) => {
         if (finished || current !== generation) return;
         const statusCode = update.lastDisconnect?.error?.output?.statusCode;
-        console.log('[pair] update:', JSON.stringify({
-          connection: update.connection, qr: Boolean(update.qr), statusCode, registered: state.creds.registered,
-        }));
 
         if (update.qr && requestCode && !codeRequested && !state.creds.registered) {
           codeRequested = true;
@@ -223,6 +221,7 @@ app.post('/api/pair/start', async (req, res) => {
             await delay(1500);
             const token = await makeToken();
             await persistAuth(folder, token);
+            const sessionDisplay = `${SESSION_PREFIX}${token}`;
             const ownId = sock.user?.id || state.creds?.me?.id;
             const selfJid = ownId ? jidNormalizedUser(ownId) : '';
             let sessionMessageSent = false;
@@ -234,14 +233,12 @@ app.post('/api/pair/start', async (req, res) => {
                   'Your session is saved and ready for activation.', '',
                   'Keep the next message private.',
                 ].join('\n') });
-                await delay(500);
-                const second = await sock.sendMessage(selfJid, { text: token });
-                await delay(500);
+                await delay(400);
+                const second = await sock.sendMessage(selfJid, { text: sessionDisplay });
+                await delay(400);
                 const third = await sock.sendMessage(selfJid, { text: [
                   '🚀 *ACTIVATE YOUR BOT*', '',
-                  'To activate DILSHAN MD, contact the activation team:',
-                  'https://wa.me/94741933159', '',
-                  'Never share your Session ID publicly.',
+                  'https://wa.me/94741933159',
                 ].join('\n') });
                 await delay(800);
                 sessionMessageSent = Boolean(first?.key?.id && second?.key?.id && third?.key?.id);
@@ -249,7 +246,13 @@ app.post('/api/pair/start', async (req, res) => {
             }
             await persistAuth(folder, token);
             console.log('[pair] SUCCESS, token saved, sessionMessageSent =', sessionMessageSent);
-            await finish({ status: 'connected', sessionId: token, sessionIdLength: 10, sessionMessageSent });
+            await finish({
+              status: 'connected',
+              sessionId: token,
+              sessionIdDisplay: sessionDisplay,
+              sessionIdLength: 10,
+              sessionMessageSent,
+            });
           } catch (err) {
             console.error('[pair] storing linked session failed:', err?.stack || err?.message || err);
             fail('WhatsApp linked, but session files could not be saved. Check persistent disk settings.');
@@ -320,4 +323,4 @@ if (require.main === module) {
       process.exit(1);
     }
   })();
-                          }
+              }
